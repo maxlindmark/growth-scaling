@@ -41,7 +41,8 @@ library(sjlabelled)
 
 options(mc.cores = parallel::detectCores()) 
 
-# To load entire cache in interactive r session, do: qwraps2::lazyload_cache_dir(path = "R/allometric_growth_model/html")
+# To load entire cache in interactive r session, do: 
+# qwraps2::lazyload_cache_dir(path = "R/allometric_growth_model_cache/html")
 ```
 
 ## Read and explore data
@@ -136,6 +137,21 @@ loo_compare(loo_gauss, loo_student, loo_skew)
 ## Make plots
 
 ```{r plot, message=FALSE}
+# First, what is the effect size?
+b <- -0.37
+
+df <- data.frame(temp_arr_ct = seq(min(dat$temp_arr_ct), max(dat$temp_arr_ct), length.out = 20)) %>% 
+  mutate(temp_arr = round(temp_arr_ct + mean(dat$temp_arr), 1)) %>% 
+  mutate(temp_c = round(1/(temp_arr * (8.617*10^-5)) - 273.15, 0))
+
+df$b <- -0.37
+
+df$b_temp <- -0.37 + 0.02*temp_arr_ct
+summary(lm(b_temp ~ temp_c, data = df))
+
+ggplot(df, aes(temp_c, b_temp)) + geom_line() + geom_point() + 
+  geom_point(data = df, aes(temp_c, b), color = "red")
+
 # Summary
 # https://cran.r-project.org/web/packages/sjPlot/vignettes/tab_model_estimates.html
 tab_model(m_skew)
