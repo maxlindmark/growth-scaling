@@ -52,7 +52,21 @@ options(mc.cores = parallel::detectCores())
 dat <- 
   read.csv(text = getURL("https://raw.githubusercontent.com/maxlindmark/scaling/master/data/growth_analysis.csv"))
 
-str(dat)
+dat <- dat %>%
+  group_by(species_ab) %>%
+  filter(y > 0) %>% 
+  mutate(log_y = log(y),
+         log_mass_intra = log_mass - mean(log_mass),
+         temp_arr_intra = temp_arr - mean(temp_arr)) %>% 
+  ungroup()
+
+dat <- dat %>%
+  filter(y > 0) %>% 
+  mutate(log_y = log(y),
+         log_mass_ct = log_mass - mean(log_mass),
+         temp_arr_ct = temp_arr - mean(temp_arr)) %>% 
+  ungroup()
+
 
 # Filter data points at below optimum temperatures
 #dat <- dat %>% filter(above_peak_temp == "N")
@@ -72,14 +86,19 @@ ggplot(dat, aes(temp_c, y, group = factor(mass_g))) +
   stat_smooth(se = FALSE, color = "gray") + 
   geom_point(data = dat, aes(temp_c, y, color = above_peak_temp))
 
-# Model
-dat <- dat %>%
-  group_by(species_ab) %>%
-  filter(y > 0) %>% 
-  mutate(log_y = log(y),
-         log_mass_intra = log_mass - mean(log_mass),
-         temp_arr_intra = temp_arr - mean(temp_arr)) %>% 
-  ungroup()
+ggplot(dat, aes(temp_arr, log_y, group = factor(mass_g))) + 
+  facet_wrap(~species_ab, scales = "free", ncol = 3) +
+  theme_classic() +
+  stat_smooth(method = "lm", se = FALSE, color = "gray") + 
+  geom_point(data = dat, aes(temp_arr, log_y, color = above_peak_temp))
+
+# No only using sub-optimum temperatures
+ggplot(filter(dat, above_peak_temp == "N"), aes(temp_arr, log_y, group = factor(mass_g))) + 
+  facet_wrap(~species_ab, scales = "free", ncol = 3) +
+  theme_classic() +
+  stat_smooth(method = "lm", se = FALSE, color = "gray") + 
+  geom_point(data = filter(dat, above_peak_temp == "N"),
+             aes(temp_arr, log_y, color = above_peak_temp))
 ```
 
 ## Fit models
@@ -87,18 +106,24 @@ dat <- dat %>%
 
 ```{r fit models, cache=TRUE, message=FALSE}
 m_gauss <- brm(
-  log_y ~ log_mass_intra*temp_arr_intra + log_mass + temp_arr + (1 + log_mass_intra*temp_arr_intra | species_ab),
-  data = dat, family = gaussian(), save_pars = save_pars(all = TRUE), control = list(adapt_delta = 0.95),
+  log_y ~ log_mass_ct*temp_arr_ct + (1 | species_ab),
+  data = filter(dat, above_peak_temp == "N"),
+  family = gaussian(), save_pars = save_pars(all = TRUE),
+  control = list(adapt_delta = 0.95, max_treedepth = 12),
   iter = 4000, cores = 4, chains = 4)
 
 m_student <- brm(
-  log_y ~ log_mass_intra*temp_arr_intra + log_mass + temp_arr + (1 + log_mass_intra*temp_arr_intra | species_ab),
-  data = dat, family = student(), save_pars = save_pars(all = TRUE), control = list(adapt_delta = 0.95),
+  log_y ~ log_mass_ct*temp_arr_ct + (1 | species_ab),
+  data = filter(dat, above_peak_temp == "N"),
+  family = student(), save_pars = save_pars(all = TRUE),
+  control = list(adapt_delta = 0.95, max_treedepth = 12),
   iter = 4000, cores = 4, chains = 4)
 
 m_skew <- brm(
-  log_y ~ log_mass_intra*temp_arr_intra + log_mass + temp_arr + (1 + log_mass_intra*temp_arr_intra | species_ab),
-  data = dat, family = skew_normal(), save_pars = save_pars(all = TRUE), control = list(adapt_delta = 0.95),
+  log_y ~ log_mass_ct*temp_arr_ct + (1 | species_ab),
+  data = filter(dat, above_peak_temp == "N"),
+  family = skew_normal(), save_pars = save_pars(all = TRUE),
+  control = list(adapt_delta = 0.95, max_treedepth = 12),
   iter = 4000, cores = 4, chains = 4)
 
 loo_gauss <- loo(m_gauss, moment_match = TRUE)
@@ -118,79 +143,116 @@ tab_model(m_skew)
 # Plot
 conditional_effects(m_skew)
 
-get_variables(m_skew)
-
-pred_df <- bind_rows(dat %>% data_grid(log_mass_intra = seq_range(log_mass_intra, n = 101)),
-                     dat %>% data_grid(log_mass_intra = seq_range(log_mass_intra, n = 101))) 
-
-ggplot(dat, aes(temp_c, temp_arr_intra)) +
+ggplot(dat, aes(temp_c, temp_arr)) +
   geom_point() +
   stat_smooth(method = "lm") + 
-  geom_hline(yintercept = c(-0.55, 0.49), color = "tomato") +
-  geom_vline(xintercept = c(3.5, 31), color = "tomato")
+  geom_hline(yintercept = c(39, 41), color = "tomato") +
+  geom_vline(xintercept = c(10, 24), color = "tomato")
 
-p1 <- pred_df %>% mutate(temp_arr = rep(mean(dat$temp_arr), 101*2), #summary(dat$temp_arr)
-                   log_mass = rep(mean(dat$log_mass), 101*2),
-                   temp_arr_intra = rep(c(-0.55, 0.49), each = 101)) %>% # summary(dat$temp_arr_intra)
-  add_epred_draws(m_skew, re_formula = NA) %>%
-  ggplot(., aes(x = log_mass_intra, y = .epred, 
-                color = factor(temp_arr_intra), fill = factor(temp_arr_intra))) +
-  stat_lineribbon(.width = c(.80), alpha = 1/4) +
+pal <- brewer.pal(n = 3, name = "Set1")
+
+summary(m_skew)
+
+p1 <- data.frame(
+  expand.grid(log_mass_ct = seq_range(dat$log_mass_ct, n = 101),
+              temp_arr_ct = round(c(39, 41) - mean(dat$temp_arr), 1))) %>% 
+  mutate(temp_arr = round(temp_arr_ct + mean(dat$temp_arr), 1)) %>% 
+  mutate(temp_c = round(1/(temp_arr * (8.617*10^-5)) - 273.15, 0)) %>% 
+  mutate(temp = paste(temp_arr, " (", temp_c, "°C)", sep = "")) %>% 
+  add_predicted_draws(m_skew, re_formula = NA) %>%
+  ggplot(., aes(x = log_mass_ct, y = .prediction,
+                color = factor(temp), fill = factor(temp))) +
+  stat_lineribbon(.width = c(.85, .95), alpha = 1/4) +
   stat_lineribbon(.width = 0, alpha = 0.7) +
   scale_color_brewer(palette = "Set1", name = "") +
   scale_fill_brewer(palette = "Set1", name = "Temperature") + 
-  theme_classic() +
-  guides(color = FALSE) + 
-  labs(x = expression(paste("log(", mass[intra], ")"))) + 
+  theme_classic(base_size = 10) +
+  geom_point(data = dat, aes(log_mass_ct, log_y), inherit.aes = FALSE,
+             size = 1.5, alpha = 0.6, shape = 21, color = "white", fill = "grey30") + 
+  # guides(color = FALSE, fill = guide_legend(ncol = 1)) +
+  guides(color = FALSE) +
+  labs(x = "log(mass)") + 
+  # annotate("text", 0, 4, size = 3, color = pal[2],
+  #          label = "y=0.64 - 0.37×log(m) - 0.61×", fontface = "italic") + # Cold
+  # annotate("text", 0, 3.5, size = 3, color = pal[1],
+  #          label = "y=0.64 - 0.37×log(m) - 0.61×t", fontface = "italic") + # Warm
   theme(aspect.ratio = 1,
-        legend.position = c(0.3, 0.2))
+        legend.key.size = unit(0.5, "line"), 
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 7),
+        legend.spacing.x = unit(0.1, 'cm'),
+        legend.margin = margin(0, 0, 0, 0),
+        #legend.position = c(0.3, 0.2),
+        legend.position = "bottom",
+        plot.margin = unit(c(0, 0.1, 0, 0), "cm"))
 
-# Plot
-# m_skew %>%
-#   gather_draws(b_log_mass_intra, b_temp_arr_intra, 
-#                b_log_mass, b_temp_arr, `b_log_mass_intra:temp_arr_intra`,
-#                sd_species_ab__Intercept, sd_species_ab__log_mass_intra,
-#                sd_species_ab__temp_arr_intra, sigma) %>%
-#   ggplot(aes(x = .variable, y = .value)) +
-#   stat_halfeye() + 
-#   theme_classic() + 
-#   coord_flip() +
-#   geom_vline(xintercept = 0, linetype = "dashed") +
-#   scale_fill_manual(values = c("gray80", "tomato"))
-
-p2 <- m_skew %>%
-  spread_draws(`b_log_mass_intra:temp_arr_intra`) %>%
-  ggplot(aes(x = `b_log_mass_intra:temp_arr_intra`, fill = stat(x < 0))) +
-  stat_halfeye(.width = c(0.75, 0.95)) + 
-  theme_classic() + 
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  scale_fill_manual(values = c("gray80", "tomato")) +
-  labs(x = "Mass×Temp. interaction") +
+p2 <- data.frame(
+  expand.grid(log_mass_ct = round(c(2, 5) - mean(dat$log_mass), 2), # summary(dat$log_mass)
+              temp_arr_ct = seq_range(dat$temp_arr_ct, n = 101))) %>% 
+  mutate(log_mass = round(log_mass_ct + mean(dat$log_mass), 2)) %>% 
+  add_predicted_draws(m_skew, re_formula = NA) %>%
+  ggplot(., aes(x = temp_arr_ct, y = .prediction,
+                color = factor(log_mass), fill = factor(log_mass))) +
+  stat_lineribbon(.width = c(.85, .95), alpha = 1/4) +
+  stat_lineribbon(.width = 0, alpha = 0.7) +
+  scale_color_brewer(palette = "Dark2", name = "") +
+  scale_fill_brewer(palette = "Dark2", name = "log(mass)") + # Check this! Not the centered scale
+  theme_classic(base_size = 10) +
+  geom_point(data = dat, aes(temp_arr_ct, log_y), inherit.aes = FALSE,
+             size = 1.5, alpha = 0.6, shape = 21, color = "white", fill = "grey30") + 
+  #guides(color = FALSE, fill = guide_legend(ncol = 1)) + 
+  guides(color = FALSE) +
+  labs(x = "Temperature (1/kT[K])") + 
   theme(aspect.ratio = 1,
-        legend.position = c(0.8, 0.5))
-
-(p1 | p2) + plot_annotation(tag_levels = "A")
-ggsave("figures/Fig1.png", width = 6.5, height = 6.5, dpi = 600)
-
+        legend.key.size = unit(0.5, "line"), 
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 7),
+        legend.spacing.x = unit(0.1, 'cm'),
+        legend.margin = margin(0, 0, 0, 0),
+        #legend.position = c(0.2, 0.2),
+        legend.position = "bottom",
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
 
 p3 <- m_skew %>%
-  spread_draws(`b_log_mass_intra:temp_arr_intra`,
-               r_species_ab[species_ab, `log_mass_intra:temp_arr_intra`]) %>%
-  filter(`\`log_mass_intra:temp_arr_intra\`` == "log_mass_intra:temp_arr_intra") %>% 
-  mutate(interaction_mean = `b_log_mass_intra:temp_arr_intra` + r_species_ab) %>%
-  ggplot(aes(y = species_ab, x = interaction_mean, fill = stat(x < 0))) +
+  spread_draws(`b_log_mass_ct:temp_arr_ct`) %>%
+  ggplot(aes(x = `b_log_mass_ct:temp_arr_ct`, fill = stat(x < 0))) +
+  stat_halfeye(.width = c(0.85, 0.95)) + 
+  theme_classic(base_size = 10) + 
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("gray90", "grey60")) +
+  labs(x = "Mass×Temp. interaction") +
+  #guides(fill = guide_legend(ncol = 1)) + 
+  theme(aspect.ratio = 1,
+        legend.key.size = unit(0.5, "line"), 
+        legend.text = element_text(size = 6),
+        legend.title = element_text(size = 7),
+        legend.spacing.x = unit(0.1, 'cm'),
+        legend.margin = margin(0, 0, 0, 0),
+        #legend.position = c(0.8, 0.5),
+        #legend.position = "bottom"
+        legend.position = "bottom",
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+(p1 | p2 | p3) + plot_annotation(tag_levels = "A")
+ggsave("figures/Fig1.png", width = 6.5, height = 6.5, dpi = 600)
+
+get_variables(m_skew)
+
+p4 <- m_skew %>%
+  spread_draws(b_Intercept, r_species_ab[species_ab, ]) %>%
+  mutate(intercept_mean = b_Intercept + r_species_ab) %>%
+  ggplot(aes(y = species_ab, x = intercept_mean)) +
   stat_halfeye() + 
   theme_classic(base_size = 12) + 
-  coord_cartesian(xlim = c(-0.2, 0.25)) + 
-  geom_vline(xintercept = 0, linetype = "dashed") +
+  #coord_cartesian(xlim = c(-0.2, 0.25)) + 
   scale_fill_manual(values = c("gray80", "tomato")) + 
   theme(legend.position = "bottom", 
         axis.text.y = element_text(face = "italic")) + 
-  labs(y = "Species", x = "Mass×Temperature interaction") +
+  labs(y = "Species", x = "Intercept") +
   NULL
 
-p3
-ggsave("figures/Fig2.png", width = 4, height = 8, dpi = 600)
+p4
+ggsave("figures/Fig2.png", width = 3, height = 6, dpi = 600)
 
 
 # Model validation
@@ -199,20 +261,22 @@ dimnames(posterior)
 
 mcmc_trace(
   posterior, 
-  pars = c("b_log_mass_intra", "b_temp_arr_intra", 
-           "b_log_mass", "b_temp_arr", "b_log_mass_intra:temp_arr_intra",
-           "sd_species_ab__Intercept", "sd_species_ab__log_mass_intra",
-           "sd_species_ab__temp_arr_intra", "sigma"),
-  facet_args = list(ncol = 3, strip.position = "left")) + 
-  geom_line(alpha = .5) +
+  pars = c("b_Intercept", "b_log_mass_ct", 
+           "b_temp_arr_ct", "b_log_mass_ct:temp_arr_ct", "sd_species_ab__Intercept",
+           "sd_species_ab__Intercept", "sigma", "alpha"),
+  facet_args = list(ncol = 2, strip.position = "left")) + 
+  geom_line(alpha = .2) +
   theme(text = element_text(size = 12),
         strip.text = element_text(size = 3),
         legend.position = c(0.6, 0.05),
         legend.direction = "horizontal") + 
   scale_color_viridis(discrete = TRUE, direction = -1) +
+  theme_classic(base_size = 12) +
   theme(axis.text.x = element_text(angle = 90),
-        legend.position = "bottom") + 
-  theme_classic() +
+        #legend.position = "bottom",
+        legend.position = c(0.75, 0.1),
+        strip.text = element_text(size = 5),
+        legend.direction = "horizontal") + 
   NULL
 
 ggsave("figures/FigS1.png", width = 6.5, height = 6.5, dpi = 600)
