@@ -1,0 +1,8 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Model cache
+R/allometric_growth_model_cache
+R/allometric_growth_model_files
